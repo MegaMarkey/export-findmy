@@ -2,7 +2,7 @@
 
 Export AirTag/FindMy accessory private keys from iCloud, producing `.plist` files compatible with [FindMy.py](https://github.com/malmeloo/FindMy.py).
 
-Works on any platform — no Mac key extraction tools needed. Useful when macOS breaks existing methods (as happened with macOS 26).
+Should works on any platform? --- Tested on MacOS 26
 
 ## Prerequisites
 
