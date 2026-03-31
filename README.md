@@ -42,17 +42,17 @@ The tool will prompt for:
 ### Example
 
 ```
-$ ./target/release/export-findmy --apple-id jq.yang@berkeley.edu --output-dir ./keys
+$ ./target/release/export-findmy --apple-id xxxx@xxx --output-dir ./keys
 Password:
 [1/7] Connecting to anisette server...
 [2/7] Logging in to Apple ID...
 2FA code: 123456
-  Logged in (dsid=1826840088)
+  Logged in (dsid=......)
 [3/7] Fetching MobileMe delegate...
 [4/7] Setting up CloudKit & Keychain...
 [5/7] Joining iCloud Keychain trust circle...
   Found 1 escrow bottle(s):
-    [0] L2MPKH342P
+    [0] ......
   Using escrow bottle from device: L2MPKH342P
   Enter the passcode of that device:
   Joined keychain trust circle!
