@@ -153,6 +153,45 @@ fn system_time_to_rfc3339(time: std::time::SystemTime) -> String {
     DateTime::<Utc>::from(time).to_rfc3339()
 }
 
+fn format_optional_system_time(time: Option<std::time::SystemTime>) -> String {
+    match time {
+        Some(time) => system_time_to_rfc3339(time),
+        None => "<none>".to_string(),
+    }
+}
+
+fn debug_dump_accessory(acc: &ExportedAccessory) {
+    eprintln!("  [debug] record_id={}", acc.record_id);
+    eprintln!(
+        "          stable_identifier={}",
+        acc.master_record.stable_identifier
+    );
+    eprintln!(
+        "          name={:?}, emoji={:?}, associated_beacon={}",
+        acc.naming.name,
+        acc.naming.emoji,
+        acc.naming.associated_beacon
+    );
+    eprintln!(
+        "          model={:?}, product_id={}, vendor_id={}, system_version={:?}",
+        acc.master_record.model,
+        acc.master_record.product_id,
+        acc.master_record.vendor_id,
+        acc.master_record.system_version
+    );
+    eprintln!(
+        "          pairing_date={}, alignment_index={}, alignment_date={}",
+        format_optional_system_time(acc.master_record.pairing_date),
+        acc.alignment.last_index_observed,
+        format_optional_system_time(acc.alignment.last_index_observation_date)
+    );
+    eprintln!(
+        "          has_shared_secret_2={}, has_secure_locations_shared_secret={}",
+        acc.master_record.shared_secret_2.is_some(),
+        acc.master_record.secure_locations_shared_secret.is_some()
+    );
+}
+
 fn sanitize_filename_component(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut prev_was_sep = false;
@@ -297,6 +336,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut apple_id = String::new();
     let mut anisette_url = DEFAULT_ANISETTE_URL.to_string();
     let mut output_dir = PathBuf::from(".");
+    let mut debug_records = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -310,6 +350,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--output-dir" => {
                 output_dir = PathBuf::from(next_arg(&args, &mut i, "--output-dir")?);
             }
+            "--debug-records" => {
+                debug_records = true;
+            }
             "--help" | "-h" => {
                 eprintln!("Usage: export-findmy [OPTIONS]");
                 eprintln!();
@@ -317,6 +360,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 eprintln!("  --apple-id <email>       Apple ID email");
                 eprintln!("  --anisette-url <url>     Anisette server URL (default: {DEFAULT_ANISETTE_URL})");
                 eprintln!("  --output-dir <dir>       Output directory for hass-FindMy JSON files (default: .)");
+                eprintln!("  --debug-records          Print raw per-record metadata before JSON export");
                 eprintln!();
                 eprintln!("WARNING: Output JSON files contain private key material.");
                 return Ok(());
@@ -591,6 +635,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut skipped = 0usize;
 
     for acc in &accessories {
+        if debug_records {
+            debug_dump_accessory(acc);
+        }
+
         let json = match accessory_to_findmy_json(acc) {
             Ok(json) => json,
             Err(err) => {
