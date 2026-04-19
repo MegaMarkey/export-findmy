@@ -261,6 +261,21 @@ fn read_password() -> Result<String, Box<dyn std::error::Error>> {
     Ok(rpassword::read_password()?)
 }
 
+fn prompt_line(prompt: &str) -> Result<String, Box<dyn std::error::Error>> {
+    eprint!("{prompt}");
+    std::io::stderr().flush()?;
+
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    Ok(input.trim().to_string())
+}
+
+fn prompt_password(prompt: &str) -> Result<String, Box<dyn std::error::Error>> {
+    eprint!("{prompt}");
+    std::io::stderr().flush()?;
+    read_password()
+}
+
 // ── Main ────────────────────────────────────────────────────────────────
 
 #[tokio::main]
@@ -270,7 +285,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_keystore(SoftwareKeystore {
         state: plist::from_file("keystore.plist").unwrap_or_default(),
         update_state: Box::new(|state| {
-            plist::to_file_xml("keystore.plist", state).unwrap();
+            if let Err(err) = plist::to_file_xml("keystore.plist", state) {
+                eprintln!("Warning: failed to persist keystore.plist: {err}");
+            }
         }),
         encryptor: NoEncryptor,
     });
@@ -312,15 +329,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if apple_id.is_empty() {
-        eprint!("Apple ID: ");
-        std::io::stderr().flush()?;
-        std::io::stdin().read_line(&mut apple_id)?;
-        apple_id = apple_id.trim().to_string();
+        apple_id = prompt_line("Apple ID: ")?;
     }
 
-    eprint!("Password: ");
-    std::io::stderr().flush()?;
-    let password = read_password()?;
+    let password = prompt_password("Password: ")?;
 
     std::fs::create_dir_all(&output_dir)?;
 
@@ -329,7 +341,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── Step 1: Create anisette client ──────────────────────────────
     eprintln!("[1/7] Connecting to anisette server...");
     let anisette_config_path = PathBuf::from_str("anisette_state").unwrap();
-    std::fs::create_dir_all(&anisette_config_path).ok();
+    std::fs::create_dir_all(&anisette_config_path)?;
 
     let login_info = config.get_gsa_config(&APSState::default(), false);
 
@@ -350,9 +362,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tfa_closure = || {
         eprint!("2FA code: ");
         let _ = std::io::stderr().flush();
+
         let mut input = String::new();
-        std::io::stdin().read_line(&mut input).unwrap();
-        input.trim().to_string()
+        match std::io::stdin().read_line(&mut input) {
+            Ok(_) => input.trim().to_string(),
+            Err(err) => {
+                eprintln!("Failed to read 2FA code: {err}");
+                String::new()
+            }
+        }
     };
 
     let account = AppleAccount::login(
@@ -431,10 +449,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bottle_idx = if bottles.len() == 1 {
         0
     } else {
-        eprint!("  Choose bottle [0]: ");
-        std::io::stderr().flush()?;
-        let mut input = String::new();
-        std::io::stdin().read_line(&mut input)?;
+        let input = prompt_line("  Choose bottle [0]: ")?;
         let idx = input.trim().parse::<usize>().unwrap_or(0);
         if idx >= bottles.len() {
             return Err(format!("Invalid bottle index {}. Must be 0-{}.", idx, bottles.len() - 1).into());
@@ -443,9 +458,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let (bottle, meta) = &bottles[bottle_idx];
     eprintln!("  Using escrow bottle from device: {}", meta.serial);
-    eprint!("  Enter the passcode of that device: ");
-    std::io::stderr().flush()?;
-    let passcode = read_password()?;
+    let passcode = prompt_password("  Enter the passcode of that device: ")?;
 
     keychain
         .join_clique_from_escrow(bottle, passcode.as_bytes(), b"findmy-export")
@@ -485,17 +498,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (_, changes, _) = result?.remove(0);
 
     for change in changes {
-        let identifier = change
+        let Some(identifier) = change
             .identifier
             .as_ref()
-            .unwrap()
-            .value
-            .as_ref()
-            .unwrap()
-            .name()
-            .to_string();
+            .and_then(|identifier| identifier.value.as_ref())
+            .map(|value| value.name().to_string())
+        else {
+            eprintln!("  Skipping record change without identifier");
+            continue;
+        };
+
         let Some(record) = change.record else { continue };
-        let record_type = record.r#type.as_ref().unwrap().name().to_string();
+
+        let Some(record_type) = record.r#type.as_ref().map(|record_type| record_type.name().to_string()) else {
+            eprintln!("  Skipping record without type: {}", identifier);
+            continue;
+        };
 
         if record_type == MasterBeaconRecord::record_type() {
             let pcs = pcs_keys_for_record(&record, &key)?;
