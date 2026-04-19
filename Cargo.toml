@@ -2,7 +2,7 @@
 name = "export-findmy"
 version = "0.1.0"
 edition = "2021"
-description = "Export AirTag/FindMy accessory private keys from iCloud, producing plist files compatible with FindMy.py"
+description = "Export AirTag/FindMy accessory private keys from iCloud as hass-FindMy-compatible JSON files"
 
 [dependencies]
 rustpush = { git = "https://github.com/MegaMarkey/rustpush.git", branch = "findmy-export-support", default-features = false, features = ["remote-anisette-v3"] }
@@ -18,3 +18,5 @@ uuid = { version = "1.4.1", features = ["v4"] }
 rand = "0.8.5"
 libc = "0.2"
 pretty_env_logger = "0.5.0"
+chrono = { version = "0.4", default-features = true, features = ["clock"] }
+serde_json = "1.0"
