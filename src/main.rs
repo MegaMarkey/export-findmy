@@ -1,5 +1,4 @@
 use std::collections::{HashMap, HashSet};
-use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -258,39 +257,9 @@ fn next_arg(args: &[String], i: &mut usize, flag: &str) -> Result<String, Box<dy
 // ── Password reading ────────────────────────────────────────────────────
 
 fn read_password() -> String {
-    if std::io::stdin().is_terminal() {
-        let pass = disable_echo_read();
-        eprintln!();
-        pass
-    } else {
-        let mut pass = String::new();
-        std::io::stdin().read_line(&mut pass).unwrap();
-        pass.trim().to_string()
-    }
-}
-
-#[cfg(unix)]
-fn disable_echo_read() -> String {
-    unsafe {
-        use std::os::unix::io::AsRawFd;
-        let fd = std::io::stdin().as_raw_fd();
-        let mut termios: libc::termios = std::mem::zeroed();
-        libc::tcgetattr(fd, &mut termios);
-        let old = termios;
-        termios.c_lflag &= !libc::ECHO;
-        libc::tcsetattr(fd, libc::TCSANOW, &termios);
-        let mut pass = String::new();
-        std::io::stdin().read_line(&mut pass).unwrap();
-        libc::tcsetattr(fd, libc::TCSANOW, &old);
-        pass.trim().to_string()
-    }
-}
-
-#[cfg(not(unix))]
-fn disable_echo_read() -> String {
-    let mut pass = String::new();
-    std::io::stdin().read_line(&mut pass).unwrap();
-    pass.trim().to_string()
+    rpassword::read_password().unwrap_or_else(|e| {
+        panic!("Failed to read password securely: {e}");
+    })
 }
 
 // ── Main ────────────────────────────────────────────────────────────────
@@ -326,7 +295,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 output_dir = PathBuf::from(next_arg(&args, &mut i, "--output-dir")?);
             }
             "--help" | "-h" => {
-                eprintln!("Usage: export_findmy [OPTIONS]");
+                eprintln!("Usage: export-findmy [OPTIONS]");
                 eprintln!();
                 eprintln!("Options:");
                 eprintln!("  --apple-id <email>       Apple ID email");
