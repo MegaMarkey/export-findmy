@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -256,10 +257,8 @@ fn next_arg(args: &[String], i: &mut usize, flag: &str) -> Result<String, Box<dy
 
 // ── Password reading ────────────────────────────────────────────────────
 
-fn read_password() -> String {
-    rpassword::read_password().unwrap_or_else(|e| {
-        panic!("Failed to read password securely: {e}");
-    })
+fn read_password() -> Result<String, Box<dyn std::error::Error>> {
+    Ok(rpassword::read_password()?)
 }
 
 // ── Main ────────────────────────────────────────────────────────────────
@@ -314,12 +313,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if apple_id.is_empty() {
         eprint!("Apple ID: ");
+        std::io::stderr().flush()?;
         std::io::stdin().read_line(&mut apple_id)?;
         apple_id = apple_id.trim().to_string();
     }
 
     eprint!("Password: ");
-    let password = read_password();
+    std::io::stderr().flush()?;
+    let password = read_password()?;
 
     std::fs::create_dir_all(&output_dir)?;
 
@@ -348,6 +349,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let appleid_closure = move || (apple_id_clone.clone(), password_hash.clone());
     let tfa_closure = || {
         eprint!("2FA code: ");
+        let _ = std::io::stderr().flush();
         let mut input = String::new();
         std::io::stdin().read_line(&mut input).unwrap();
         input.trim().to_string()
@@ -430,6 +432,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         0
     } else {
         eprint!("  Choose bottle [0]: ");
+        std::io::stderr().flush()?;
         let mut input = String::new();
         std::io::stdin().read_line(&mut input)?;
         let idx = input.trim().parse::<usize>().unwrap_or(0);
@@ -441,7 +444,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (bottle, meta) = &bottles[bottle_idx];
     eprintln!("  Using escrow bottle from device: {}", meta.serial);
     eprint!("  Enter the passcode of that device: ");
-    let passcode = read_password();
+    std::io::stderr().flush()?;
+    let passcode = read_password()?;
 
     keychain
         .join_clique_from_escrow(bottle, passcode.as_bytes(), b"findmy-export")
