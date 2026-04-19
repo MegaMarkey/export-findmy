@@ -1,100 +1,107 @@
 # export-findmy
 
-Export AirTag/FindMy accessory private keys from iCloud, producing `.plist` files compatible with [FindMy.py](https://github.com/malmeloo/FindMy.py).
+Export Apple Find My accessory keys from iCloud and write one **hass-FindMy-compatible `.json` file per device**.
 
-Should works on any platform? --- Tested on MacOS 26
+This fork targets direct import into Home Assistant via `hass-FindMy`'s device-key upload. The generated files follow the current `FindMyAccessory.from_json(...)` schema used by `FindMy.py`/`hass-FindMy`.
+
+## What it does
+
+- signs into your Apple account
+- joins the iCloud Keychain trust circle via an escrow bottle
+- decrypts Find My accessory records from CloudKit
+- writes one JSON file per accessory for direct upload into `hass-FindMy`
+
+## Output format
+
+Each exported device is written as a separate `.json` file containing:
+
+- `type`
+- `master_key`
+- `skn`
+- `sks`
+- `paired_at`
+- `name`
+- `model`
+- `identifier`
+- `alignment_date`
+- `alignment_index`
+
+These files are intended for the `hass-FindMy` flow that says: **Upload your device keys in `.json` or `.plist` format.**
+
+## Notable behavior in this fork
+
+- exports **JSON**, not legacy plist output
+- matches naming/alignment records by the CloudKit record ID used by `rustpush`
+- writes unique filenames so devices do not overwrite each other
+- hides password and passcode input via `rpassword`
 
 ## Prerequisites
 
-- [Rust toolchain](https://rustup.rs/)
-- `openssl` CLI (for building — generates dummy FairPlay certs needed by rustpush)
-- `protoc` (protobuf compiler) — `brew install protobuf` on macOS
+- Rust toolchain
+- `openssl` CLI
+- `protoc`
+
+On macOS:
+
+```bash
+brew install openssl protobuf
+```
+
+On Debian/Ubuntu:
+
+```bash
+sudo apt install build-essential pkg-config libssl-dev protobuf-compiler
+```
+
+On Windows, install:
+
+- Rust
+- OpenSSL development files usable by your Rust toolchain
+- Protobuf / `protoc`
 
 ## Build
 
 ```bash
-git clone https://github.com/MegaMarkey/export-findmy.git
-cd export-findmy
 cargo build --release
 ```
 
 ## Usage
 
 ```bash
-./target/release/export-findmy \
-  --apple-id you@example.com \
-  --output-dir ./keys
+./target/release/export-findmy --apple-id you@example.com --output-dir ./keys
 ```
 
-The tool will prompt for:
-1. **Password** (hidden input)
-2. **2FA code** — enter the **SMS code** sent to your phone, not the code shown on other devices
-3. **Device passcode** — the screen lock passcode (iPhone PIN) or login password (Mac) of the device listed
+If you omit `--apple-id`, the tool prompts for it interactively.
 
-### Options
+Options:
 
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--apple-id <email>` | Apple ID email | prompted if omitted |
-| `--anisette-url <url>` | Anisette v3 server URL | `https://ani.sidestore.io` |
-| `--output-dir <dir>` | Where to write plist files | `.` |
+- `--apple-id <email>` Apple ID email address
+- `--anisette-url <url>` anisette server URL
+- `--output-dir <dir>` output directory for generated JSON files
 
-### Example
+Default anisette URL:
 
-```
-$ ./target/release/export-findmy --apple-id xxxx@xxx --output-dir ./keys
-Password:
-[1/7] Connecting to anisette server...
-[2/7] Logging in to Apple ID...
-2FA code: 123456
-  Logged in (dsid=......)
-[3/7] Fetching MobileMe delegate...
-[4/7] Setting up CloudKit & Keychain...
-[5/7] Joining iCloud Keychain trust circle...
-  Found 1 escrow bottle(s):
-    [0] ......
-  Using escrow bottle from device: L2MPKH342P
-  Enter the passcode of that device:
-  Joined keychain trust circle!
-[6/7] Fetching FindMy accessories from CloudKit...
-[7/7] Writing plist files...
-  🎧 Wilbur's AirTag (AirTag) -> ./keys/Wilbur_s_AirTag.plist
-
-Done! Exported 1 accessory plist file(s) to ./keys
+```text
+https://ani.sidestore.io
 ```
 
-## Output format
+## Import into Home Assistant
 
-Each accessory produces a `.plist` file containing:
+1. Open the `hass-FindMy` integration.
+2. Choose the option to upload device keys.
+3. Upload one of the generated `.json` files.
+4. Repeat for each accessory.
 
-| Key | Description |
-|-----|-------------|
-| `privateKey` | EC private key (for deriving rolling BLE keys) |
-| `sharedSecret` | Primary shared secret |
-| `secondarySharedSecret` | Secondary shared secret (if present) |
-| `publicKey` | EC public key |
-| `identifier` | Stable accessory identifier |
-| `name` | User-assigned name |
-| `emoji` | User-assigned emoji |
-| `model` | Hardware model |
-| `pairingDate` | When the accessory was paired |
+## Security
 
-These files can be used directly with [FindMy.py](https://github.com/malmeloo/FindMy.py) for tracking AirTag locations.
+The generated JSON files contain sensitive key material. Treat them like secrets.
 
-## Security notes
+- Do not commit them to Git.
+- Do not share them.
+- Delete them when you no longer need them.
 
-- **Output plist files contain private key material.** Treat them like passwords.
-- Your Apple ID password and device passcode are never written to disk.
-- `anisette_state/` and `keystore.plist` are created in the working directory at runtime — these contain device provisioning state and keychain crypto keys. Delete them after use if you don't plan to run the tool again.
-- The anisette server only sees OTP header requests from your IP. It never sees your Apple ID, password, or iCloud data.
+## Limits
 
-## How it works
-
-1. Authenticates to Apple via SRP (using remote anisette for device identity tokens)
-2. Fetches MobileMe delegate tokens via the iOS `iosbuddy` login endpoint
-3. Joins the iCloud Keychain trust circle via escrow recovery (using your device passcode)
-4. Fetches encrypted `BeaconStore` records from CloudKit
-5. Decrypts records using PCS (Protected CloudStorage) keys from the keychain
-6. Writes accessory data to plist files
-
-Built on [rustpush](https://github.com/OpenBubbles/rustpush) by the OpenBubbles project.
+- This project depends on `rustpush` and the current Find My / iCloud behavior.
+- Some Apple device classes may expose incomplete metadata such as empty `model` strings or missing naming records.
+- Shared items and unsupported device classes may still need additional handling.
