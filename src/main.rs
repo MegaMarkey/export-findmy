@@ -466,7 +466,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     token_provider.set_mme_delegate(mobileme).await;
 
     let cloudkit_state = CloudKitState::new(dsid.clone())
-        .map_err(|err| format!("Failed to create CloudKitState: {err}"))?;
+        .ok_or_else(|| std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("Failed to create CloudKitState for dsid={}", dsid),
+        ))?;
     let cloudkit = Arc::new(CloudKitClient {
         state: DebugRwLock::new(cloudkit_state),
         anisette: anisette_client.clone(),
