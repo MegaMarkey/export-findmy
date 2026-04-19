@@ -100,6 +100,13 @@ The generated JSON files contain sensitive key material. Treat them like secrets
 - Do not share them.
 - Delete them when you no longer need them.
 
+The tool also creates or updates local state files in the working directory:
+
+- `keystore.plist` stores local keystore state used during keychain recovery.
+- `anisette_state/` stores anisette provisioning/session state for the configured anisette backend.
+
+These files are also sensitive and should be handled accordingly.
+
 ## Limits
 
 - This project depends on `rustpush` and the current Find My / iCloud behavior.
