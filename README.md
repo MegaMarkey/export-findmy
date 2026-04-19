@@ -4,6 +4,8 @@ Export Apple Find My accessory keys from iCloud and write one **hass-FindMy-comp
 
 This fork targets direct import into Home Assistant via `hass-FindMy`'s device-key upload. The generated files follow the current `FindMyAccessory.from_json(...)` schema used by `FindMy.py`/`hass-FindMy`.
 
+Most of the code was written by ChatGPT and has only been briefly checked. Use at your own risk!
+
 ## What it does
 
 - signs into your Apple account
