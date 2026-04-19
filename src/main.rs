@@ -1,15 +1,17 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::IsTerminal;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use keystore::{init_keystore, software::{NoEncryptor, SoftwareKeystore}};
 use sha2::{Sha256, Digest};
 use omnisette::remote_anisette_v3::RemoteAnisetteProviderV3;
 use omnisette::{AnisetteClient, ArcAnisetteClient};
 use plist::Dictionary;
+use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
 use rustpush::cloudkit::{
@@ -18,8 +20,7 @@ use rustpush::cloudkit::{
 };
 use rustpush::cloudkit_proto::CloudKitRecord;
 use rustpush::findmy::{
-    BeaconAccessory, BeaconNamingRecord, BeaconRatchet,
-    KeyAlignmentRecord, MasterBeaconRecord,
+    BeaconNamingRecord, KeyAlignmentRecord, MasterBeaconRecord,
     SEARCH_PARTY_CONTAINER, FIND_MY_SERVICE,
 };
 use rustpush::keychain::{KeychainClient, KeychainClientState};
@@ -30,6 +31,17 @@ use rustpush::{
 use rustpush::{DebugMeta, RegisterMeta};
 
 // ── Fake OSConfig (presents as iPhone to avoid NAS validation) ───────
+
+
+const DEFAULT_ANISETTE_URL: &str = "https://ani.sidestore.io";
+
+#[derive(Clone)]
+struct ExportedAccessory {
+    record_id: String,
+    master_record: MasterBeaconRecord,
+    naming: BeaconNamingRecord,
+    alignment: KeyAlignmentRecord,
+}
 
 struct FakeIOSConfig {
     device_uuid: String,
@@ -126,59 +138,121 @@ impl OSConfig for FakeIOSConfig {
     }
 }
 
-// ── Plist generation ────────────────────────────────────────────────────
+// ── JSON generation ─────────────────────────────────────────────────────
 
-fn accessory_to_plist(acc: &BeaconAccessory) -> plist::Value {
-    let mut dict = Dictionary::new();
+fn bytes_to_hex(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        let _ = write!(&mut out, "{byte:02x}");
+    }
+    out
+}
 
-    dict.insert(
-        "privateKey".to_string(),
-        plist::Value::Data(acc.master_record.private_key.clone()),
-    );
-    dict.insert(
-        "sharedSecret".to_string(),
-        plist::Value::Data(acc.master_record.shared_secret.clone()),
-    );
-    if let Some(ref ss2) = acc.master_record.shared_secret_2 {
-        dict.insert(
-            "secondarySharedSecret".to_string(),
-            plist::Value::Data(ss2.clone()),
-        );
-    }
-    if let Some(ref slss) = acc.master_record.secure_locations_shared_secret {
-        dict.insert(
-            "secureLocationsSharedSecret".to_string(),
-            plist::Value::Data(slss.clone()),
-        );
-    }
-    dict.insert(
-        "publicKey".to_string(),
-        plist::Value::Data(acc.master_record.public_key.clone()),
-    );
-    dict.insert(
-        "identifier".to_string(),
-        plist::Value::String(acc.master_record.stable_identifier.clone()),
-    );
-    dict.insert(
-        "model".to_string(),
-        plist::Value::String(acc.master_record.model.clone()),
-    );
-    if let Some(pairing_date) = acc.master_record.pairing_date {
-        dict.insert(
-            "pairingDate".to_string(),
-            plist::Value::Date(pairing_date.into()),
-        );
-    }
-    dict.insert(
-        "name".to_string(),
-        plist::Value::String(acc.naming.name.clone()),
-    );
-    dict.insert(
-        "emoji".to_string(),
-        plist::Value::String(acc.naming.emoji.clone()),
-    );
+fn system_time_to_rfc3339(time: std::time::SystemTime) -> String {
+    DateTime::<Utc>::from(time).to_rfc3339()
+}
 
-    plist::Value::Dictionary(dict)
+fn sanitize_filename_component(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut prev_was_sep = false;
+
+    for ch in input.trim().chars() {
+        let mapped = if ch.is_alphanumeric() || ch == '-' || ch == '_' {
+            ch
+        } else {
+            '_'
+        };
+
+        if mapped == '_' {
+            if !prev_was_sep {
+                out.push(mapped);
+            }
+            prev_was_sep = true;
+        } else {
+            out.push(mapped);
+            prev_was_sep = false;
+        }
+    }
+
+    let out = out.trim_matches('_').to_string();
+    if out.is_empty() {
+        "device".to_string()
+    } else {
+        out
+    }
+}
+
+fn unique_output_path(
+    output_dir: &Path,
+    preferred_stem: &str,
+    fallback_stem: &str,
+    used_stems: &mut HashSet<String>,
+) -> PathBuf {
+    let preferred = sanitize_filename_component(preferred_stem);
+    let fallback = sanitize_filename_component(fallback_stem);
+
+    let base = if preferred == "device" { fallback } else { preferred };
+    let mut candidate = base.clone();
+    let mut suffix = 2usize;
+
+    while used_stems.contains(&candidate) {
+        candidate = format!("{base}_{suffix}");
+        suffix += 1;
+    }
+
+    used_stems.insert(candidate.clone());
+    output_dir.join(format!("{candidate}.json"))
+}
+
+fn accessory_to_findmy_json(acc: &ExportedAccessory) -> Result<Value, String> {
+    let paired_at = acc
+        .master_record
+        .pairing_date
+        .ok_or_else(|| format!("{}: missing pairing_date", acc.record_id))?;
+
+    let private_key = &acc.master_record.private_key;
+    if private_key.len() < 28 {
+        return Err(format!(
+            "{}: private_key too short ({} bytes)",
+            acc.record_id,
+            private_key.len()
+        ));
+    }
+    let master_key = &private_key[private_key.len() - 28..];
+
+    let secondary_secret = acc
+        .master_record
+        .shared_secret_2
+        .as_ref()
+        .or(acc.master_record.secure_locations_shared_secret.as_ref())
+        .ok_or_else(|| format!("{}: missing secondary shared secret", acc.record_id))?;
+
+    let alignment_date = acc
+        .alignment
+        .last_index_observation_date
+        .or(acc.master_record.pairing_date);
+
+    Ok(json!({
+        "type": "accessory",
+        "master_key": bytes_to_hex(master_key),
+        "skn": bytes_to_hex(&acc.master_record.shared_secret),
+        "sks": bytes_to_hex(secondary_secret),
+        "paired_at": system_time_to_rfc3339(paired_at),
+        "name": acc.naming.name.clone(),
+        "model": acc.master_record.model.clone(),
+        "identifier": acc.master_record.stable_identifier.clone(),
+        "alignment_date": alignment_date.map(system_time_to_rfc3339),
+        "alignment_index": acc.alignment.last_index_observed,
+    }))
+}
+
+fn next_arg(args: &[String], i: &mut usize, flag: &str) -> Result<String, Box<dyn std::error::Error>> {
+    *i += 1;
+    if *i >= args.len() {
+        return Err(format!("Missing value for {flag}").into());
+    }
+    Ok(args[*i].clone())
 }
 
 // ── Password reading ────────────────────────────────────────────────────
@@ -236,38 +310,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
 
     let mut apple_id = String::new();
-    let mut anisette_url = "https://ani.sidestore.io".to_string();
+    let mut anisette_url = DEFAULT_ANISETTE_URL.to_string();
     let mut output_dir = PathBuf::from(".");
 
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
             "--apple-id" => {
-                i += 1;
-                apple_id = args[i].clone();
+                apple_id = next_arg(&args, &mut i, "--apple-id")?;
             }
             "--anisette-url" => {
-                i += 1;
-                anisette_url = args[i].clone();
+                anisette_url = next_arg(&args, &mut i, "--anisette-url")?;
             }
             "--output-dir" => {
-                i += 1;
-                output_dir = PathBuf::from(&args[i]);
+                output_dir = PathBuf::from(next_arg(&args, &mut i, "--output-dir")?);
             }
             "--help" | "-h" => {
                 eprintln!("Usage: export_findmy [OPTIONS]");
                 eprintln!();
                 eprintln!("Options:");
                 eprintln!("  --apple-id <email>       Apple ID email");
-                eprintln!("  --anisette-url <url>     Anisette server URL (default: https://ani.sidestore.io)");
-                eprintln!("  --output-dir <dir>       Output directory for plist files (default: .)");
+                eprintln!("  --anisette-url <url>     Anisette server URL (default: {DEFAULT_ANISETTE_URL})");
+                eprintln!("  --output-dir <dir>       Output directory for hass-FindMy JSON files (default: .)");
                 eprintln!();
-                eprintln!("WARNING: Output plist files contain private key material.");
+                eprintln!("WARNING: Output JSON files contain private key material.");
                 return Ok(());
             }
             _ => {
-                eprintln!("Unknown argument: {}", args[i]);
-                return Ok(());
+                return Err(format!("Unknown argument: {}", args[i]).into());
             }
         }
         i += 1;
@@ -479,66 +549,77 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // ── Assemble accessories ────────────────────────────────────────
-    let mut accessories: HashMap<String, BeaconAccessory> = HashMap::new();
+    let mut accessories: Vec<ExportedAccessory> = Vec::new();
 
     for (id, master) in beacon_records {
         let stable_id = master.stable_identifier.clone();
-        let naming = naming_records
-            .remove(&stable_id)
-            .unwrap_or_else(|| {
-                (
-                    String::new(),
-                    BeaconNamingRecord {
-                        emoji: "".to_string(),
-                        name: format!("Unknown-{}", &stable_id[..8.min(stable_id.len())]),
-                        associated_beacon: stable_id.clone(),
-                        role_id: 0,
-                    },
-                )
-            });
-        let alignment = alignment_records
-            .remove(&stable_id)
-            .map(|(id, rec)| (id, rec))
-            .unwrap_or_default();
-        accessories.insert(
-            id,
-            BeaconAccessory {
-                master_record: master,
-                naming: naming.1,
-                naming_id: naming.0,
-                naming_prot_tag: None,
-                alignment: alignment.1.clone(),
-                alignment_id: alignment.0,
-                aligment_prot_tag: None,
-                local_alignment: alignment.1,
-                last_report: None,
-                primary_ratchet: BeaconRatchet::default(),
-                secondary_ratchet: BeaconRatchet::default(),
-            },
-        );
+
+        let naming = naming_records.remove(&id).unwrap_or_else(|| {
+            let short_stable = &stable_id[..8.min(stable_id.len())];
+            let short_id = &id[..8.min(id.len())];
+            (
+                String::new(),
+                BeaconNamingRecord {
+                    emoji: "".to_string(),
+                    name: format!("Unknown-{short_stable}-{short_id}"),
+                    associated_beacon: id.clone(),
+                    role_id: 0,
+                },
+            )
+        });
+
+        let alignment = alignment_records.remove(&id).unwrap_or_else(|| {
+            (
+                String::new(),
+                KeyAlignmentRecord {
+                    beacon_identifier: id.clone(),
+                    last_index_observed: 0,
+                    last_index_observation_date: master.pairing_date,
+                },
+            )
+        });
+
+        accessories.push(ExportedAccessory {
+            record_id: id,
+            master_record: master,
+            naming: naming.1,
+            alignment: alignment.1,
+        });
     }
 
-    // ── Step 7: Write plist files ───────────────────────────────────
-    eprintln!("[7/7] Writing plist files...");
+    // ── Step 7: Write hass-FindMy JSON files ────────────────────────
+    eprintln!("[7/7] Writing hass-FindMy JSON files...");
 
     if accessories.is_empty() {
         eprintln!("  No accessories found!");
         return Ok(());
     }
 
-    for acc in accessories.values() {
-        let safe_name: String = acc
-            .naming
-            .name
-            .chars()
-            .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
-            .collect();
-        let filename = format!("{}.plist", safe_name);
-        let path = output_dir.join(&filename);
+    let mut used_stems = HashSet::new();
+    let mut exported = 0usize;
+    let mut skipped = 0usize;
 
-        let plist_val = accessory_to_plist(acc);
-        plist::to_file_xml(&path, &plist_val)?;
+    for acc in &accessories {
+        let json = match accessory_to_findmy_json(acc) {
+            Ok(json) => json,
+            Err(err) => {
+                skipped += 1;
+                eprintln!("  Skipping {}: {}", acc.record_id, err);
+                continue;
+            }
+        };
 
+        let path = unique_output_path(
+            &output_dir,
+            &acc.naming.name,
+            &format!("{}_{}", acc.master_record.stable_identifier, acc.record_id),
+            &mut used_stems,
+        );
+
+        let file = std::fs::File::create(&path)?;
+        serde_json::to_writer_pretty(file, &json)?;
+
+        exported += 1;
         eprintln!(
             "  {} {} ({}) -> {}",
             acc.naming.emoji,
@@ -550,10 +631,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     eprintln!();
     eprintln!(
-        "Done! Exported {} accessory plist file(s) to {}",
-        accessories.len(),
+        "Done! Exported {} hass-FindMy JSON file(s) to {}",
+        exported,
         output_dir.display()
     );
+    if skipped > 0 {
+        eprintln!("Skipped {} accessory record(s) because required data was missing.", skipped);
+    }
 
     Ok(())
 }
