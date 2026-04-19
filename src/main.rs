@@ -235,7 +235,9 @@ fn unique_output_path(
     let mut candidate = base.clone();
     let mut suffix = 2usize;
 
-    while used_stems.contains(&candidate) {
+    while used_stems.contains(&candidate)
+        || output_dir.join(format!("{candidate}.json")).exists()
+    {
         candidate = format!("{base}_{suffix}");
         suffix += 1;
     }
@@ -425,12 +427,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
 
-    let spd = account.spd.as_ref().expect("No SPD after login");
+    let spd = account.spd.as_ref().ok_or("No SPD after login")?;
     let dsid = spd["DsPrsId"]
         .as_unsigned_integer()
-        .unwrap()
+        .ok_or("Missing DsPrsId in SPD")?
         .to_string();
-    let adsid = spd["adsid"].as_string().unwrap().to_string();
+    let adsid = spd["adsid"]
+        .as_string()
+        .ok_or("Missing adsid in SPD")?
+        .to_string();
 
     eprintln!("  Logged in (dsid={})", dsid);
 
@@ -445,7 +450,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .await?;
     let mobileme = delegates
         .mobileme
-        .expect("No MobileMe delegate returned");
+        .ok_or("No MobileMe delegate returned")?;
 
     // ── Step 4: Create CloudKit + Keychain clients ──────────────────
     eprintln!("[4/7] Setting up CloudKit & Keychain...");
@@ -460,8 +465,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let token_provider = TokenProvider::new(account_arc.clone(), config.clone());
     token_provider.set_mme_delegate(mobileme).await;
 
-    let cloudkit_state =
-        CloudKitState::new(dsid.clone()).expect("Failed to create CloudKitState");
+    let cloudkit_state = CloudKitState::new(dsid.clone())
+        .map_err(|err| format!("Failed to create CloudKitState: {err}"))?;
     let cloudkit = Arc::new(CloudKitClient {
         state: DebugRwLock::new(cloudkit_state),
         anisette: anisette_client.clone(),
@@ -494,7 +499,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         0
     } else {
         let input = prompt_line("  Choose bottle [0]: ")?;
-        let idx = input.trim().parse::<usize>().unwrap_or(0);
+        let idx = if input.trim().is_empty() {
+            0
+        } else {
+            input
+                .trim()
+                .parse::<usize>()
+                .map_err(|_| format!("Invalid bottle index input: {}", input.trim()))?
+        };
         if idx >= bottles.len() {
             return Err(format!("Invalid bottle index {}. Must be 0-{}.", idx, bottles.len() - 1).into());
         }
