@@ -13,7 +13,7 @@ Should works on any platform? --- Tested on MacOS 26
 ## Build
 
 ```bash
-git clone https://github.com/thisiscam/export-findmy.git
+git clone https://github.com/MegaMarkey/export-findmy.git
 cd export-findmy
 cargo build --release
 ```
