@@ -73,6 +73,8 @@ cargo build --release
 
 If you omit `--apple-id`, the tool prompts for it interactively.
 
+Password and device-passcode entry are hidden. The 2FA code prompt remains visible.
+
 Options:
 
 - `--apple-id <email>` Apple ID email address
